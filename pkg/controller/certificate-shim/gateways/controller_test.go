@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -85,6 +86,108 @@ func Test_controller_Register(t *testing.T) {
 			},
 			expectAddCalls: []interface{}{"namespace-1/gateway-1", "namespace-1/gateway-1"},
 			//                                <----- Create ------>    <------ Delete ----->
+		},
+		{
+			name: "gateway is re-queued when an 'Added' event is received for a child HTTPRoute",
+			givenCall: func(t *testing.T, _ cmclient.Interface, c gwclient.Interface) {
+				_, err := c.GatewayV1beta1().HTTPRoutes("namespace-1").Create(context.Background(), &gwapi.HTTPRoute{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "namespace-1", Name: "httproute-1",
+					},
+					Spec: gwapi.HTTPRouteSpec{
+						CommonRouteSpec: gwapi.CommonRouteSpec{
+							ParentRefs: []gwapi.ParentReference{
+								{Name: "gateway-1"},
+								{Namespace: ptrTo(gwapi.Namespace("namespace-2")), Name: "gateway-2"},
+								{Kind: ptrTo(gwapi.Kind("wrongkind")), Name: "wrong-kind"},
+								{Group: ptrTo(gwapi.Group("wronggroup")), Name: "wrong-group"},
+							},
+						},
+					},
+				}, metav1.CreateOptions{})
+				require.NoError(t, err)
+			},
+			expectAddCalls: []interface{}{"namespace-1/gateway-1", "namespace-2/gateway-2"},
+		},
+		{
+			name: "gateway is re-queued when an 'Updated' event is received for a child HTTPRoute that adds the parent",
+			givenCall: func(t *testing.T, _ cmclient.Interface, c gwclient.Interface) {
+				_, err := c.GatewayV1beta1().HTTPRoutes("namespace-1").Create(context.Background(), &gwapi.HTTPRoute{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "namespace-1", Name: "httproute-1",
+					},
+				}, metav1.CreateOptions{})
+				require.NoError(t, err)
+
+				_, err = c.GatewayV1beta1().HTTPRoutes("namespace-1").Update(context.Background(), &gwapi.HTTPRoute{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "namespace-1", Name: "httproute-1",
+					},
+					Spec: gwapi.HTTPRouteSpec{
+						CommonRouteSpec: gwapi.CommonRouteSpec{
+							ParentRefs: []gwapi.ParentReference{
+								{Name: "gateway-1"},
+							},
+						},
+					},
+				}, metav1.UpdateOptions{})
+				require.NoError(t, err)
+			},
+			expectAddCalls: []interface{}{"namespace-1/gateway-1"},
+		},
+		{
+			name: "gateway is re-queued when an 'Updated' event is received for a child HTTPRoute that removes the parent",
+			givenCall: func(t *testing.T, _ cmclient.Interface, c gwclient.Interface) {
+				_, err := c.GatewayV1beta1().HTTPRoutes("namespace-1").Create(context.Background(), &gwapi.HTTPRoute{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "namespace-1", Name: "httproute-1",
+					},
+					Spec: gwapi.HTTPRouteSpec{
+						CommonRouteSpec: gwapi.CommonRouteSpec{
+							ParentRefs: []gwapi.ParentReference{
+								{Name: "gateway-1"},
+							},
+						},
+					},
+				}, metav1.CreateOptions{})
+				require.NoError(t, err)
+
+				_, err = c.GatewayV1beta1().HTTPRoutes("namespace-1").Update(context.Background(), &gwapi.HTTPRoute{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "namespace-1", Name: "httproute-1",
+					},
+				}, metav1.UpdateOptions{})
+				require.NoError(t, err)
+			},
+			expectAddCalls: []interface{}{
+				"namespace-1/gateway-1", // Create
+				"namespace-1/gateway-1", // Update
+			},
+		},
+		{
+			name: "gateway is re-queued when an 'Deleted' event is received for a child HTTPRoute",
+			givenCall: func(t *testing.T, _ cmclient.Interface, c gwclient.Interface) {
+				_, err := c.GatewayV1beta1().HTTPRoutes("namespace-1").Create(context.Background(), &gwapi.HTTPRoute{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: "namespace-1", Name: "httproute-1",
+					},
+					Spec: gwapi.HTTPRouteSpec{
+						CommonRouteSpec: gwapi.CommonRouteSpec{
+							ParentRefs: []gwapi.ParentReference{
+								{Name: "gateway-1"},
+							},
+						},
+					},
+				}, metav1.CreateOptions{})
+				require.NoError(t, err)
+
+				err = c.GatewayV1beta1().HTTPRoutes("namespace-1").Delete(context.Background(), "httproute-1", metav1.DeleteOptions{})
+				require.NoError(t, err)
+			},
+			expectAddCalls: []interface{}{
+				"namespace-1/gateway-1", // Create
+				"namespace-1/gateway-1", // Delete
+			},
 		},
 		{
 			name: "gateway is re-queued when an 'Added' event is received for its child Certificate",
@@ -179,6 +282,182 @@ func Test_controller_Register(t *testing.T) {
 	}
 }
 
+func Test_syntheticGatewayListeners(t *testing.T) {
+	makeListeners := func(n int) (out []gwapi.Listener) {
+		for i := 0; i < n; i++ {
+			out = append(out, gwapi.Listener{
+				Name: gwapi.SectionName(fmt.Sprint("listener-", i+1)),
+				Port: 42,
+			})
+		}
+		return
+	}
+	makeListenersForHosts := func(i int, hostnames ...gwapi.Hostname) (out []gwapi.Listener) {
+		for _, hostname := range hostnames {
+			hostname := hostname
+			out = append(out, gwapi.Listener{
+				Name:     gwapi.SectionName(fmt.Sprint("listener-", i)),
+				Port:     42,
+				Hostname: ptrTo(hostname),
+			})
+		}
+		return
+	}
+	makeGateway := func(name string, listeners []gwapi.Listener) gwapi.Gateway {
+		return gwapi.Gateway{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: gwapi.GatewaySpec{
+				Listeners: listeners,
+			},
+		}
+	}
+	makeHTTPRoute := func(hostnames []gwapi.Hostname, parentNames []gwapi.ObjectName, parentAvails []bool) *gwapi.HTTPRoute {
+		r := &gwapi.HTTPRoute{
+			Spec: gwapi.HTTPRouteSpec{
+				Hostnames: hostnames,
+			},
+		}
+		for i, parentName := range parentNames {
+			ref := gwapi.ParentReference{
+				Name: parentName,
+			}
+			r.Spec.CommonRouteSpec.ParentRefs = append(r.Spec.CommonRouteSpec.ParentRefs, ref)
+
+			status := metav1.ConditionTrue
+			if !parentAvails[i] {
+				status = metav1.ConditionFalse
+			}
+			r.Status.RouteStatus.Parents = append(r.Status.RouteStatus.Parents, gwapi.RouteParentStatus{
+				ParentRef:  ref,
+				Conditions: []metav1.Condition{{Type: "Available", Status: status}},
+			})
+		}
+
+		return r
+	}
+
+	tests := []struct {
+		name            string
+		gateway         gwapi.Gateway
+		routes          routes
+		expectListeners []gwapi.Listener
+	}{
+		{
+			name:   "empty yields empty",
+			routes: httpRoutes{},
+		},
+		{
+			name:    "HTTPRoute has a hostname",
+			gateway: makeGateway("gateway-1", makeListeners(1)),
+			routes: httpRoutes{
+				makeHTTPRoute([]gwapi.Hostname{"hostname-1"}, []gwapi.ObjectName{"gateway-1"}, []bool{true}),
+			},
+			expectListeners: makeListenersForHosts(1, "hostname-1"),
+		},
+		{
+			name:    "HTTPRoute has two hostnames",
+			gateway: makeGateway("gateway-1", makeListeners(1)),
+			routes: httpRoutes{
+				makeHTTPRoute([]gwapi.Hostname{"hostname-1", "hostname-2"}, []gwapi.ObjectName{"gateway-1"}, []bool{true}),
+			},
+			expectListeners: makeListenersForHosts(1, "hostname-1", "hostname-2"),
+		},
+		{
+			name:    "HTTPRoute serves two listeners",
+			gateway: makeGateway("gateway-1", makeListeners(2)),
+			routes: httpRoutes{
+				makeHTTPRoute([]gwapi.Hostname{"hostname-1"}, []gwapi.ObjectName{"gateway-1"}, []bool{true}),
+			},
+			expectListeners: []gwapi.Listener{
+				{Name: "listener-1", Port: 42, Hostname: ptrTo(gwapi.Hostname("hostname-1"))},
+				{Name: "listener-2", Port: 42, Hostname: ptrTo(gwapi.Hostname("hostname-1"))},
+			},
+		},
+		{
+			name:    "HTTPRoute is unavailable",
+			gateway: makeGateway("gateway-1", makeListeners(1)),
+			routes: httpRoutes{
+				makeHTTPRoute([]gwapi.Hostname{"hostname-1"}, []gwapi.ObjectName{"gateway-1"}, []bool{false}),
+			},
+			expectListeners: nil,
+		},
+		{
+			name:    "HTTPRoute has a mismatching parent name",
+			gateway: makeGateway("gateway-1", makeListeners(1)),
+			routes: httpRoutes{
+				makeHTTPRoute([]gwapi.Hostname{"hostname-1"}, []gwapi.ObjectName{"gateway-x"}, []bool{true}),
+			},
+			expectListeners: nil,
+		},
+		{
+			name:    "HTTPRoute has a mismatching hostname",
+			gateway: makeGateway("gateway-1", makeListenersForHosts(1, "hostname-1")),
+			routes: httpRoutes{
+				makeHTTPRoute([]gwapi.Hostname{"hostname-x"}, []gwapi.ObjectName{"gateway-1"}, []bool{true}),
+			},
+			expectListeners: nil,
+		},
+		{
+			name:    "HTTPRoute has a mismatching section name",
+			gateway: makeGateway("gateway-1", makeListeners(1)),
+			routes: httpRoutes{
+				{
+					Spec: gwapi.HTTPRouteSpec{
+						Hostnames: []gwapi.Hostname{"hostname-1"},
+						CommonRouteSpec: gwapi.CommonRouteSpec{
+							ParentRefs: []gwapi.ParentReference{{Name: "gateway-1", SectionName: ptrTo(gwapi.SectionName("listener-x"))}},
+						},
+					},
+					Status: gwapi.HTTPRouteStatus{
+						RouteStatus: gwapi.RouteStatus{
+							Parents: []gwapi.RouteParentStatus{
+								{
+									ParentRef:  gwapi.ParentReference{Name: "gateway-1"},
+									Conditions: []metav1.Condition{{Type: "Available", Status: metav1.ConditionTrue}},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectListeners: nil,
+		},
+		{
+			name:    "HTTPRoute has a mismatching port",
+			gateway: makeGateway("gateway-1", makeListeners(1)),
+			routes: httpRoutes{
+				{
+					Spec: gwapi.HTTPRouteSpec{
+						Hostnames: []gwapi.Hostname{"hostname-1"},
+						CommonRouteSpec: gwapi.CommonRouteSpec{
+							ParentRefs: []gwapi.ParentReference{{Name: "gateway-1", Port: ptrTo(gwapi.PortNumber(0))}},
+						},
+					},
+					Status: gwapi.HTTPRouteStatus{
+						RouteStatus: gwapi.RouteStatus{
+							Parents: []gwapi.RouteParentStatus{
+								{
+									ParentRef:  gwapi.ParentReference{Name: "gateway-1"},
+									Conditions: []metav1.Condition{{Type: "Available", Status: metav1.ConditionTrue}},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectListeners: nil,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := syntheticGatewayListeners(&test.gateway, test.routes)
+
+			assert.Equal(t, test.expectListeners, got)
+		})
+	}
+}
+
 type mockWorkqueue struct {
 	t          *testing.T
 	callsToAdd []interface{}
@@ -233,4 +512,8 @@ func (m *mockWorkqueue) ShutDownWithDrain() {
 func (m *mockWorkqueue) ShuttingDown() bool {
 	m.t.Error("workqueue.ShuttingDown was called but was not expected to be called")
 	return false
+}
+
+func ptrTo[T any](a T) *T {
+	return &a
 }
