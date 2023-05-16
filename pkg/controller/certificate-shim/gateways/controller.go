@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
@@ -31,6 +32,7 @@ import (
 	gwapi "sigs.k8s.io/gateway-api/apis/v1beta1"
 	gwlisters "sigs.k8s.io/gateway-api/pkg/client/listers/apis/v1beta1"
 
+	cmacme "github.com/cert-manager/cert-manager/pkg/apis/acme/v1"
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	controllerpkg "github.com/cert-manager/cert-manager/pkg/controller"
 	shimhelper "github.com/cert-manager/cert-manager/pkg/controller/certificate-shim"
@@ -178,6 +180,10 @@ func syntheticGatewayListeners(gateway *gwapi.Gateway, routes routes) []gwapi.Li
 		if !gatewayIsAnAvailableParent(ometa, routes.RouteStatus(i), gateway) {
 			continue
 		}
+		if hasCertManagerOwner(ometa) {
+			// Ignore routes added just to solve challenges.
+			continue
+		}
 
 		for _, l := range gateway.Spec.Listeners {
 			if l.Hostname != nil {
@@ -200,6 +206,14 @@ func syntheticGatewayListeners(gateway *gwapi.Gateway, routes routes) []gwapi.Li
 		}
 	}
 	return newListeners
+}
+
+// hasCertManagerOwner returns true if ometa's controller comes from
+// cert-manager.
+func hasCertManagerOwner(ometa *metav1.ObjectMeta) bool {
+	ref := metav1.GetControllerOf(ometa)
+
+	return ref != nil && strings.HasPrefix(ref.APIVersion, cmacme.SchemeGroupVersion.Group)
 }
 
 // routes is an abstraction over []*HTTPRoute and []*GRPCRoute.

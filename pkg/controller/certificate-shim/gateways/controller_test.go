@@ -29,6 +29,7 @@ import (
 	gwapi "sigs.k8s.io/gateway-api/apis/v1beta1"
 	gwclient "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 
+	cmacme "github.com/cert-manager/cert-manager/pkg/apis/acme/v1"
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmclient "github.com/cert-manager/cert-manager/pkg/client/clientset/versioned"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -431,6 +432,40 @@ func Test_syntheticGatewayListeners(t *testing.T) {
 						Hostnames: []gwapi.Hostname{"hostname-1"},
 						CommonRouteSpec: gwapi.CommonRouteSpec{
 							ParentRefs: []gwapi.ParentReference{{Name: "gateway-1", Port: ptrTo(gwapi.PortNumber(0))}},
+						},
+					},
+					Status: gwapi.HTTPRouteStatus{
+						RouteStatus: gwapi.RouteStatus{
+							Parents: []gwapi.RouteParentStatus{
+								{
+									ParentRef:  gwapi.ParentReference{Name: "gateway-1"},
+									Conditions: []metav1.Condition{{Type: "Available", Status: metav1.ConditionTrue}},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectListeners: nil,
+		},
+		{
+			name:    "HTTPRoute is controlled by cert-manager",
+			gateway: makeGateway("gateway-1", makeListeners(1)),
+			routes: httpRoutes{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						OwnerReferences: []metav1.OwnerReference{
+							{
+								APIVersion: cmacme.SchemeGroupVersion.String(),
+								Kind:       "Challenge",
+								Controller: ptrTo(true),
+							},
+						},
+					},
+					Spec: gwapi.HTTPRouteSpec{
+						Hostnames: []gwapi.Hostname{"hostname-1"},
+						CommonRouteSpec: gwapi.CommonRouteSpec{
+							ParentRefs: []gwapi.ParentReference{{Name: "gateway-1", SectionName: ptrTo(gwapi.SectionName("listener-1"))}},
 						},
 					},
 					Status: gwapi.HTTPRouteStatus{
