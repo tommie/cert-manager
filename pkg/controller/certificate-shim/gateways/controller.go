@@ -177,18 +177,21 @@ func syntheticGatewayListeners(gateway *gwapi.Gateway, routes routes) []gwapi.Li
 	for i := 0; i < routes.Len(); i++ {
 		ometa := routes.ObjectMeta(i)
 		hostnames := routes.Hostnames(i)
-		if !gatewayIsAnAvailableParent(ometa, routes.RouteStatus(i), gateway) {
+		logf.V(logf.DebugLevel).Infof("route hostnames %v: %v", hostnames, ometa)
+		if !gatewayIsAParent(ometa, routes.RouteStatus(i), gateway) {
 			continue
 		}
 		if hasCertManagerOwner(ometa) {
 			// Ignore routes added just to solve challenges.
+			logf.V(logf.DebugLevel).Infof("Route is owned by cert-manager %s/%s: %s/%s", gateway.GetNamespace(), gateway.GetName(), ometa.GetNamespace(), ometa.GetName())
 			continue
 		}
 
-		for _, l := range gateway.Spec.Listeners {
+		for i, l := range gateway.Spec.Listeners {
 			if l.Hostname != nil {
 				// This listener has a dedicated hostname, and no
 				// route can change that.
+				logf.V(logf.DebugLevel).Infof("Listeners[%d] has a hostname, so ignoring routes: %s/%s", i, gateway.GetNamespace(), gateway.GetName())
 				continue
 			}
 
@@ -196,6 +199,7 @@ func syntheticGatewayListeners(gateway *gwapi.Gateway, routes routes) []gwapi.Li
 				continue
 			}
 
+			logf.V(logf.DebugLevel).Infof("Gateway %s/%s route %s/%s hostnames: %v", i, gateway.GetNamespace(), gateway.GetName(), ometa.GetNamespace(), ometa.GetName(), hostnames)
 			for _, hostname := range hostnames {
 				hostname := hostname
 				// We are operating on, and making, shallow copies of
@@ -293,16 +297,12 @@ func gatewayHasWildcardListener(gateway *gwapi.Gateway) bool {
 	return false
 }
 
-// gatewayIsAnAvailableParent returns true if `gateway` is a parent of
+// gatewayIsAParent returns true if `gateway` is a parent of
 // the route, and its controller has marked the route as
 // Available. This implies the route has passed validation.
-func gatewayIsAnAvailableParent(ometa *metav1.ObjectMeta, status *gwapi.RouteStatus, gateway *gwapi.Gateway) bool {
+func gatewayIsAParent(ometa *metav1.ObjectMeta, status *gwapi.RouteStatus, gateway *gwapi.Gateway) bool {
 	for _, pstatus := range status.Parents {
-		if !gatewayIsParent(ometa, &pstatus.ParentRef, gateway) {
-			continue
-		}
-
-		if conditionStatusByType(pstatus.Conditions, "Available") == metav1.ConditionTrue {
+		if gatewayIsParent(ometa, &pstatus.ParentRef, gateway) {
 			return true
 		}
 	}
