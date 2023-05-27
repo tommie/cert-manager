@@ -187,11 +187,11 @@ func syntheticGatewayListeners(gateway *gwapi.Gateway, routes routes) []gwapi.Li
 			continue
 		}
 
-		for i, l := range gateway.Spec.Listeners {
+		for j, l := range gateway.Spec.Listeners {
 			if l.Hostname != nil {
 				// This listener has a dedicated hostname, and no
 				// route can change that.
-				logf.V(logf.DebugLevel).Infof("Listeners[%d] has a hostname, so ignoring routes: %s/%s", i, gateway.GetNamespace(), gateway.GetName())
+				logf.V(logf.DebugLevel).Infof("Listeners[%d] has a hostname, so ignoring routes: %s/%s", j, gateway.GetNamespace(), gateway.GetName())
 				continue
 			}
 
@@ -199,7 +199,7 @@ func syntheticGatewayListeners(gateway *gwapi.Gateway, routes routes) []gwapi.Li
 				continue
 			}
 
-			logf.V(logf.DebugLevel).Infof("Gateway %s/%s route %s/%s hostnames: %v", i, gateway.GetNamespace(), gateway.GetName(), ometa.GetNamespace(), ometa.GetName(), hostnames)
+			logf.V(logf.DebugLevel).Infof("Gateway %s/%s route %s/%s hostnames: %v", gateway.GetNamespace(), gateway.GetName(), ometa.GetNamespace(), ometa.GetName(), hostnames)
 			for _, hostname := range hostnames {
 				hostname := hostname
 				// We are operating on, and making, shallow copies of
